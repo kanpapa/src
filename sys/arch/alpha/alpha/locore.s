@@ -134,9 +134,15 @@ NESTED_NOPROFILE(locorestart,1,0,ra,0,0)
 	 */
 	CALL(alpha_init)
 
+		/* ★デバッグ: alpha_initから戻った直後 */
+	CALL(axpvme_debug_mark1)
+
 	/* Set up the virtual page table pointer. */
 	ldiq	a0, VPTBASE
 	call_pal PAL_OSF1_wrvptptr	/* clobbers a0, t0, t8-t11 */
+
+	/* ★デバッグ: wrvptptr直後 */
+	CALL(axpvme_debug_mark2)
 
 	/*
 	 * Switch to lwp0's PCB.
@@ -144,6 +150,9 @@ NESTED_NOPROFILE(locorestart,1,0,ra,0,0)
 	lda	a0, lwp0
 	ldq	a0, L_MD_PCBPADDR(a0)		/* phys addr of PCB */
 	call_pal PAL_OSF1_swpctx	/* clobbers a0, t0, t8-t11, a0 */
+
+	/* ★デバッグ: swpctx直後(ここに到達できるかが最大の関心点) */
+	CALL(axpvme_debug_mark3)
 
 	/* PROM is no longer mapped. */
 	lda	t0, prom_mapped
@@ -155,7 +164,14 @@ NESTED_NOPROFILE(locorestart,1,0,ra,0,0)
 	 */
 	ldiq	a0, -2				/* TBIA */
 	call_pal PAL_OSF1_tbi
+
+	/* ★デバッグ: TBIA直後 */
+	CALL(axpvme_debug_mark4)
+
 	call_pal PAL_imb
+
+	/* ★デバッグ: imb直後、main呼び出し直前 */
+	CALL(axpvme_debug_mark5)
 
 	/*
 	 * All ready to go!  Call main()!

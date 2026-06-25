@@ -96,6 +96,13 @@ extern void dec_axppci_33_init(void);
 #define	dec_axppci_33_init	platform_not_configured
 #endif
 
+#include "opt_dec_axpvme_64.h"
+#ifdef DEC_AXPVME_64
+extern void dec_axpvme_64_init(void);
+#else
+#define	dec_axpvme_64_init	platform_not_configured
+#endif
+
 #include "opt_dec_kn8ae.h"
 #ifdef DEC_KN8AE
 extern void dec_kn8ae_init(void);
@@ -220,7 +227,8 @@ static const struct cpuinit cpuinit[] = {
 	cpu_init(ST_DEC_2000_300, dec_2000_300_init, "DEC_2000_300"),
 	cpu_init(ST_DEC_3000_300, dec_3000_300_init, "DEC_3000_300"),
 	cpu_init(ST_DEC_2100_A500, dec_2100_a500_init, "DEC_2100_A500"),
-	cpu_notsupp(ST_DEC_APXVME_64, "AXPvme 64"),
+	//cpu_notsupp(ST_DEC_APXVME_64, "AXPvme 64"),
+	cpu_init(ST_DEC_APXVME_64, dec_axpvme_64_init, "AXPvme 64"),
 	cpu_init(ST_DEC_AXPPCI_33, dec_axppci_33_init, "DEC_AXPPCI_33"),
 	cpu_init(ST_DEC_21000, dec_kn8ae_init, "DEC_KN8AE"),
 	cpu_init(ST_DEC_2100_A50, dec_2100_a50_init, "DEC_2100_A50"),

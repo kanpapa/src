@@ -212,6 +212,13 @@ void	dumpsys(void);
 void	identifycpu(void);
 void	printregs(struct reg *);
 
+void axpvme_debug_mark1(void);
+void axpvme_debug_mark2(void);
+void axpvme_debug_mark3(void);
+void axpvme_debug_mark4(void);
+void axpvme_debug_mark5(void);
+
+
 const pcu_ops_t fpu_ops = {
 	.pcu_id = PCU_FPU,
 	.pcu_state_load = fpu_state_load,
@@ -285,6 +292,13 @@ alpha_page_physload_sheltered(unsigned long const start_pfn,
 		    shelter_end_pfn, end_pfn, VM_FREELIST_DEFAULT);
 	}
 }
+
+void axpvme_debug_mark1(void) { printf("axpvme: mark1 (after alpha_init)\n"); }
+void axpvme_debug_mark2(void) { printf("axpvme: mark2 (after wrvptptr)\n"); }
+void axpvme_debug_mark3(void) { printf("axpvme: mark3 (after swpctx)\n"); }
+void axpvme_debug_mark4(void) { printf("axpvme: mark4 (after TBIA)\n"); }
+void axpvme_debug_mark5(void) { printf("axpvme: mark5 (before main)\n"); }
+
 
 void
 alpha_init(u_long xxx_pfn __unused, u_long ptb, u_long bim, u_long bip,
@@ -529,13 +543,13 @@ nobootinfo:
 		    mddtp->mddt_cluster_cnt);
 	}
 
-#if 0
+#if 1
 	printf("Memory cluster count: %" PRIu64 "\n", mddtp->mddt_cluster_cnt);
 #endif
 
 	for (i = 0; i < mddtp->mddt_cluster_cnt; i++) {
 		memc = &mddtp->mddt_clusters[i];
-#if 0
+#if 1
 		printf("MEMC %d: pfn 0x%lx cnt 0x%lx usage 0x%lx\n", i,
 		    memc->mddt_pfn, memc->mddt_pg_cnt, memc->mddt_usage);
 #endif
@@ -594,14 +608,14 @@ nobootinfo:
 			 * Must compute the location of the kernel
 			 * within the segment.
 			 */
-#if 0
+#if 1
 			printf("Cluster %d contains kernel\n", i);
 #endif
 			if (pfn0 < kernstartpfn && !prom_uses_prom_console()) {
 				/*
 				 * There is a chunk before the kernel.
 				 */
-#if 0
+#if 1
 				printf("Loading chunk before kernel: "
 				    "0x%lx / 0x%lx\n", pfn0, kernstartpfn);
 #endif
@@ -611,7 +625,7 @@ nobootinfo:
 				/*
 				 * There is a chunk after the kernel.
 				 */
-#if 0
+#if 1
 				printf("Loading chunk after kernel: "
 				    "0x%lx / 0x%lx\n", kernendpfn, pfn1);
 #endif
@@ -621,7 +635,7 @@ nobootinfo:
 			/*
 			 * Just load this cluster as one chunk.
 			 */
-#if 0
+#if 1
 			printf("Loading cluster %d: 0x%lx / 0x%lx\n", i,
 			    pfn0, pfn1);
 #endif
@@ -658,7 +672,7 @@ nobootinfo:
 	if (totalphysmem == 0)
 		panic("can't happen: system seems to have no memory!");
 	maxmem = physmem;
-#if 0
+#if 1
 	printf("totalphysmem = %d\n", totalphysmem);
 	printf("physmem = %lu\n", physmem);
 	printf("resvmem = %d\n", resvmem);
@@ -696,6 +710,8 @@ nobootinfo:
 
 	}
 
+	printf("axpvme: msgbuf init done\n");   /* ★追加 */
+
 	/*
 	 * NOTE: It is safe to use uvm_pageboot_alloc() before
 	 * pmap_bootstrap() because our pmap_virtual_space()
@@ -708,12 +724,19 @@ nobootinfo:
 	v = uvm_pageboot_alloc(UPAGES * PAGE_SIZE);
 	uvm_lwp_setuarea(&lwp0, v);
 
+	printf("axpvme: uvm_pageboot_alloc done\n");   /* ★追加 */
+
 	/*
 	 * Initialize the virtual memory system, and set the
 	 * page table base register in proc 0's PCB.
 	 */
+	printf("axpvme: rpb_max_asn=%ld rpb_pcs_cnt=%ld ptb=0x%lx\n",
+	    hwrpb->rpb_max_asn, hwrpb->rpb_pcs_cnt, ptb);  /* ★追加 */
+	
 	pmap_bootstrap(ALPHA_PHYS_TO_K0SEG(ptb << PGSHIFT),
 	    hwrpb->rpb_max_asn, hwrpb->rpb_pcs_cnt);
+	
+	printf("axpvme: pmap_bootstrap done\n");   /* ★追加 */
 
 	/*
 	 * Initialize the rest of lwp0's PCB and cache its physical address.
@@ -721,11 +744,19 @@ nobootinfo:
 	pcb0 = lwp_getpcb(&lwp0);
 	lwp0.l_md.md_pcbpaddr = (void *)ALPHA_K0SEG_TO_PHYS((vaddr_t)pcb0);
 
+	printf("axpvme: pcb0=%p md_pcbpaddr=%p\n",
+	    pcb0, lwp0.l_md.md_pcbpaddr);   /* ★追加 pcb0(K0SEGの仮想アドレス)とmd_pcbpaddr(変換後の物理アドレス) */
+
 	/*
 	 * Set the kernel sp, reserving space for an (empty) trapframe,
 	 * and make lwp0's trapframe pointer point to it for sanity.
 	 */
 	pcb0->pcb_hw.apcb_ksp = v + USPACE - sizeof(struct trapframe);
+
+	printf("axpvme: apcb_ksp=0x%lx apcb_ptbr=0x%lx apcb_asn=0x%x\n",
+	    pcb0->pcb_hw.apcb_ksp, pcb0->pcb_hw.apcb_ptbr,
+	    pcb0->pcb_hw.apcb_asn);   /* ★追加 */
+
 	lwp0.l_md.md_tf = (struct trapframe *)pcb0->pcb_hw.apcb_ksp;
 
 	/* Indicate that lwp0 has a CPU. */
@@ -820,6 +851,7 @@ nobootinfo:
 	 * We may perform more later if we attach additional CPUs.
 	 */
 	alpha_patch(false);
+	printf("axpvme: after alpha_patch\n");           /* ★追加 */
 
 	/*
 	 * Figure out the number of CPUs in the box, from RPB fields.
@@ -832,13 +864,17 @@ nobootinfo:
 		if ((pcsp->pcs_flags & PCS_PP) != 0)
 			ncpus++;
 	}
+	printf("axpvme: after cpu count loop, ncpus=%d\n", ncpus);  /* ★追加 */
 
 	/*
 	 * Initialize debuggers, and break into them if appropriate.
 	 */
 #if NKSYMS || defined(DDB) || defined(MODULAR)
-	ksyms_addsyms_elf((int)((uint64_t)ksym_end - (uint64_t)ksym_start),
+	printf("axpvme: before ksyms_addsyms_elf, start=%p end=%p\n",
+	    ksym_start, ksym_end);                        /* ★追加 */
+		ksyms_addsyms_elf((int)((uint64_t)ksym_end - (uint64_t)ksym_start),
 	    ksym_start, ksym_end);
+	printf("axpvme: after ksyms_addsyms_elf\n");      /* ★追加 */
 #endif
 
 	if (boothowto & RB_KDB) {
@@ -858,6 +894,7 @@ nobootinfo:
 		printf("WARNING: unbelievable rpb_intr_freq: %ld (%d hz)\n",
 			hwrpb->rpb_intr_freq, hz);
 #endif
+	printf("axpvme: alpha_init() end\n");             /* ★追加 */
 }
 
 void
@@ -925,7 +962,7 @@ cpu_startup(void)
 #endif
 	format_bytes(pbuf, sizeof(pbuf), ptoa(uvm_availmem(false)));
 	printf("avail memory = %s\n", pbuf);
-#if 0
+#if 1
 	{
 		extern u_long pmap_pages_stolen;
 
