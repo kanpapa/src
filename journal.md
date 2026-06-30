@@ -752,25 +752,124 @@ NetBSD client 11.99.6 NetBSD 11.99.6 (GENERIC-$Revision: 1.421 $) #110: \
 "spwd.db"           → パスワードDB参照
 ```
 
-その後の起動問題と解決:
-- `rc_configured=NO` → `YES` に変更（multi-user mode 有効化）
-- `/export/client/root/usr` マウントポイント不存在 → `mkdir` で作成
-- `/etc/fstab` に `ptyfs /dev/pts ptyfs rw` を追加（PTY 使用のため）
-- SSH でログイン確認: `uname -a` → `NetBSD ... alpha` ✓
-
 rc スクリプトが最後まで実行されている。マルチユーザー起動に成功。
 
-### SSH 接続の準備
+---
 
-sshd は `rc.conf` で `sshd=NO` に設定されていたため未起動。
-NFS root 側で以下を実施:
-1. SSH ホスト鍵を生成（`/etc/ssh/ssh_host_*_key`）
-2. `rc.conf` で `sshd=YES` に変更
-3. `sshd_config` に `PermitRootLogin yes` を追加
-4. `root/.ssh/authorized_keys` に公開鍵を登録
+## 2026-06-30: NFS root 設定（サーバー側）
+
+diskless boot を動かすために NFS root 側（`/export/client/root/` 以下）で
+必要だった設定をまとめる。
+
+### 1. `/etc/rc.conf` の修正
+
+```
+rc_configured=NO  →  rc_configured=YES
+```
+
+`rc_configured=NO` のままだと `/etc/rc` が single-user shell（`/bin/sh`）を起動して
+そこで止まる。multi-user boot に進まないため sshd 等のデーモンが一切起動しない。
+
+`sshd=YES`・`ftpd=YES` は最初から設定されていた。
+
+### 2. マウントポイントの作成
+
+```bash
+mkdir /export/client/root/usr
+mkdir /export/client/root/home
+```
+
+`/etc/fstab` に以下のエントリがあるが、root filesystem 内にディレクトリが
+存在しなかったため NFS mount が失敗していた。
+
+```
+nfsserver:/export/client/usr   /usr   nfs  rw 0 0
+nfsserver:/export/client/home  /home  nfs  rw 0 0
+```
+
+`/usr` が mount されないと `/usr/sbin/sshd`・`/usr/bin/grep` 等が全て
+"not found" になり、rc スクリプトが多数エラーを出しながらも完走するが
+肝心のデーモンが起動しない。
+
+### 3. SSH ホスト鍵の生成
+
+```bash
+ssh-keygen -t rsa   -b 4096 -f /export/client/root/etc/ssh/ssh_host_rsa_key   -N ""
+ssh-keygen -t ecdsa         -f /export/client/root/etc/ssh/ssh_host_ecdsa_key  -N ""
+ssh-keygen -t ed25519       -f /export/client/root/etc/ssh/ssh_host_ed25519_key -N ""
+chmod 600 /export/client/root/etc/ssh/ssh_host_*_key
+```
+
+### 4. `sshd_config` への `PermitRootLogin yes` 追加
+
+デフォルトでは root ログインが禁止されているため追加が必要。
+
+```bash
+echo "PermitRootLogin yes" >> /export/client/root/etc/ssh/sshd_config
+```
+
+### 5. `authorized_keys` の設置
+
+```bash
+mkdir -p /export/client/root/root/.ssh
+chmod 700 /export/client/root/root/.ssh
+cat ~/.ssh/id_*.pub > /export/client/root/root/.ssh/authorized_keys
+chmod 600 /export/client/root/root/.ssh/authorized_keys
+```
+
+### 6. `/etc/fstab` への `ptyfs` 追加
+
+```
+ptyfs  /dev/pts  ptyfs  rw
+```
+
+これがないと PTY allocation が失敗し `ssh` でインタラクティブシェルが
+開けない（`ssh -T` のみ使用可能な状態になる）。
+
+### 結果
+
+```
+$ ssh root@192.168.99.10
+# uname -a
+NetBSD client 11.99.6 NetBSD 11.99.6 (GENERIC-$Revision: 1.421 $) \
+    #110: Tue Jun 30 06:42:32 JST 2026 \
+    ocha@ocha-ubuntu:/home/ocha/obj/sys/arch/alpha/compile/AXPVME alpha
+```
+
+```
+$ ftp 192.168.99.10
+Connected to 192.168.99.10.
+220 client.kanpapa.com FTP server (NetBSD-ftpd 20230930) ready.
+```
+
+DEC AXPvme 230 で NetBSD/alpha diskless NFS boot → SSH・FTP ログイン成功。
+
+起動後のプロセス状態（`ps ax`）:
+
+```
+ PID TTY   STAT    TIME COMMAND
+   0 ?     DKl  0:17.71 [system]
+   1 ?     Is   0:01.02 init
+ 446 ?     Ss   0:00.79 /usr/sbin/syslogd -s
+ 815 ?     Is   0:00.31 sshd: /usr/sbin/sshd [listener] 0 of 10-100 startups
+ 868 ?     I    0:01.74 pickup -l -t unix -u
+ 893 ?     Ss   0:06.09 sshd: root@pts/0 (sshd)
+ 982 ?     Is   0:00.15 /usr/sbin/inetd -l
+1303 ?     I    0:01.76 qmgr -l -t unix -u
+1365 ?     Is   0:00.28 /usr/sbin/cron
+1427 ?     Is   0:01.24 /usr/libexec/postfix/master -w
+1432 ?     I    0:01.92 ftpd: nfsserver.kanpapa.com: connected: USER root
+1571 ?     Is   0:00.25 /usr/libexec/ftpd -ll -D
+ 916 pts/0 Ss   0:01.45 -sh
+1582 ?     Is+  0:00.32 /usr/libexec/getty std.9600 constty
+```
+
+init, syslogd, sshd, inetd, cron, postfix, ftpd が全て正常稼働。
+PID 1582 の getty は constty（シリアルコンソール）で待機しているが、
+PROM console 抑制中のためキー入力は届かない。
+Z8530 SCC ドライバを実装すれば物理コンソールも復活する。
 
 ### 次のアクション
 
-1. SSH 接続確認 → ログイン成功で diskless boot 完全達成
-2. 長期: Z8530 SCC コンソールドライバの実装（PROM console からの脱却）
-3. 長期: PCI interrupt routing の整理（`pci_axpvme_64.c`）
+1. 長期: Z8530 SCC コンソールドライバの実装（PROM console からの脱却）
+2. 長期: PCI interrupt routing の整理（`pci_axpvme_64.c`）
