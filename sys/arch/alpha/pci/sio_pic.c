@@ -126,6 +126,7 @@ static uint8_t initial_elcr[2];
 #endif
 
 static void	sio_setirqstat(int, int, int);
+void		sio_dump_irq_state(void);
 
 static uint8_t	(*sio_read_elcr)(int);
 static void	(*sio_write_elcr)(int, uint8_t);
@@ -347,6 +348,34 @@ sio_intr_setup(pci_chipset_tag_t pc, bus_space_tag_t iot)
 	if (bus_space_map(sio_iot, IO_ICU1, 2, 0, &sio_ioh_icu1) ||
 	    bus_space_map(sio_iot, IO_ICU2, 2, 0, &sio_ioh_icu2))
 		panic("sio_intr_setup: can't map ICU I/O ports");
+
+	/*
+	 * Reprogram the 8259 PICs.  Alpha OSF/1 PALcode interrupt dispatch
+	 * requires the 8259 IACK to return the bare IRQ number (0-15), so
+	 * ICW2 must be 0x00 (master) and 0x08 (slave).  The SRM firmware may
+	 * leave the PICs in a different state (e.g. PC-style ICW2=0x08/0x70).
+	 */
+	/* Master 8259 */
+	bus_space_write_1(sio_iot, sio_ioh_icu1, PIC_ICW1,
+	    ICW1_SELECT | ICW1_IC4);			/* cascade, ICW4 needed */
+	bus_space_write_1(sio_iot, sio_ioh_icu1, PIC_ICW2,
+	    ICW2_VECTOR(0x00));				/* base vector 0 */
+	bus_space_write_1(sio_iot, sio_ioh_icu1, PIC_ICW3,
+	    ICW3_CASCADE(2));				/* slave on IR2 */
+	bus_space_write_1(sio_iot, sio_ioh_icu1, PIC_ICW4,
+	    ICW4_8086);					/* 8086 mode */
+	bus_space_write_1(sio_iot, sio_ioh_icu1, PIC_OCW1, 0xff); /* mask all */
+
+	/* Slave 8259 */
+	bus_space_write_1(sio_iot, sio_ioh_icu2, PIC_ICW1,
+	    ICW1_SELECT | ICW1_IC4);			/* cascade, ICW4 needed */
+	bus_space_write_1(sio_iot, sio_ioh_icu2, PIC_ICW2,
+	    ICW2_VECTOR(0x08));				/* base vector 8 */
+	bus_space_write_1(sio_iot, sio_ioh_icu2, PIC_ICW3,
+	    ICW3_SIC(2));				/* slave ID 2 */
+	bus_space_write_1(sio_iot, sio_ioh_icu2, PIC_ICW4,
+	    ICW4_8086);					/* 8086 mode */
+	bus_space_write_1(sio_iot, sio_ioh_icu2, PIC_OCW1, 0xff); /* mask all */
 
 	for (i = 0; sio_elcr_setup_funcs[i] != NULL; i++)
 		if ((*sio_elcr_setup_funcs[i])() == 0)
@@ -648,6 +677,34 @@ sio_isa_intr_establish(void *v, int irq, int type, int level,
     int (*fn)(void *), void *arg)
 {
 	return sio_intr_establish(v, irq, type, level, 0, fn, arg);
+}
+
+void
+sio_dump_irq_state(void)
+{
+	uint8_t imr1, imr2, irr1, irr2, elcr1, elcr2;
+
+	/* IMR: interrupt mask register (OCW1), read from data port */
+	imr1 = bus_space_read_1(sio_iot, sio_ioh_icu1, PIC_OCW1);
+	imr2 = bus_space_read_1(sio_iot, sio_ioh_icu2, PIC_OCW1);
+
+	/* IRR: send OCW3 read-IRR command (0x0A), then read command port */
+	bus_space_write_1(sio_iot, sio_ioh_icu1, PIC_ICW1, 0x0A);
+	irr1 = bus_space_read_1(sio_iot, sio_ioh_icu1, PIC_ICW1);
+	bus_space_write_1(sio_iot, sio_ioh_icu2, PIC_ICW1, 0x0A);
+	irr2 = bus_space_read_1(sio_iot, sio_ioh_icu2, PIC_ICW1);
+
+	/* ELCR: edge/level control register */
+	elcr1 = (*sio_read_elcr)(0);
+	elcr2 = (*sio_read_elcr)(1);
+
+	printf("8259 state: IMR=%02x/%02x IRR=%02x/%02x ELCR=%02x/%02x"
+	    " IRQ6: imr=%s irr=%s elcr=%s\n",
+	    imr1, imr2, irr1, irr2, elcr1, elcr2,
+	    (imr1 & 0x40) ? "MASKED" : "unmasked",
+	    (irr1 & 0x40) ? "PENDING" : "clear",
+	    (elcr1 & 0x40) ? "level" : "EDGE");
+
 }
 
 void

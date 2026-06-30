@@ -46,8 +46,11 @@ __KERNEL_RCSID(0, "$NetBSD: lca_dma.c,v 1.28 2023/08/01 21:26:27 andvar Exp $");
 #include <dev/pci/pcivar.h>
 #include <alpha/pci/lcareg.h>
 #include <alpha/pci/lcavar.h>
+#include <machine/alpha_cpu.h>
 
 static bus_dma_tag_t lca_dma_get_tag(bus_dma_tag_t, alpha_bus_t);
+static void lca_bcache_dmamap_sync(bus_dma_tag_t, bus_dmamap_t,
+    bus_addr_t, bus_size_t, int);
 
 static int	lca_bus_dmamap_load_sgmap(bus_dma_tag_t, bus_dmamap_t, void *,
 		    bus_size_t, struct proc *, int);
@@ -91,6 +94,7 @@ do { \
 	alpha_mb(); \
 } while (0)
 
+
 void
 lca_dma_init(struct lca_config *lcp)
 {
@@ -114,7 +118,11 @@ lca_dma_init(struct lca_config *lcp)
 	t->_dmamap_load_uio = _bus_dmamap_load_uio_direct;
 	t->_dmamap_load_raw = _bus_dmamap_load_raw_direct;
 	t->_dmamap_unload = _bus_dmamap_unload;
-	t->_dmamap_sync = _bus_dmamap_sync;
+	t->_dmamap_sync = lcp->lc_bcache_size != 0 ?
+	    lca_bcache_dmamap_sync : _bus_dmamap_sync;
+	printf("lca_dma_init: lc_bcache_size=%u sync=%s\n",
+	    lcp->lc_bcache_size,
+	    lcp->lc_bcache_size != 0 ? "bcache_evict" : "mb_only");
 
 	t->_dmamem_alloc = _bus_dmamem_alloc;
 	t->_dmamem_free = _bus_dmamem_free;
@@ -185,6 +193,54 @@ lca_dma_init(struct lca_config *lcp)
 	alpha_mb();
 
 	LCA_TLB_INVALIDATE();
+}
+
+/*
+ * DMA sync for LCA with external write-back Bcache (e.g. AXPvme 230).
+ *
+ * The standard _bus_dmamap_sync only calls alpha_mb(), which does not flush
+ * dirty Bcache lines to DRAM.  On AXPvme 230 with a 512KB direct-mapped
+ * external Bcache (BCE=1, BCS=3 from MEMC_CAR):
+ *  - PREWRITE: CPU writes land in Bcache (dirty); DRAM is stale; DMA device
+ *    reads stale DRAM and misses the descriptor update.
+ *  - POSTREAD: DMA device writes to DRAM; CPU hits the stale dirty Bcache
+ *    line and sees the old value.
+ *
+ * PAL_cflush and K1SEG (uncached) writes cannot be used because the Bcache
+ * controller on this board does not respond to the invalidation protocol and
+ * the CPU hangs.
+ *
+ * Conflict-eviction: for a direct-mapped Bcache, accessing (phys + bcache_size)
+ * via K0SEG causes the Bcache to evict the line at (phys), writing any dirty
+ * data back to DRAM.  This is an internal Bcache operation with no external
+ * protocol and works correctly on AXPvme 230.
+ */
+static void
+lca_bcache_dmamap_sync(bus_dma_tag_t t, bus_dmamap_t map,
+    bus_addr_t offset, bus_size_t len, int ops)
+{
+	if (ops & (BUS_DMASYNC_PREWRITE | BUS_DMASYNC_POSTREAD)) {
+		struct lca_config *lcp = t->_cookie;
+		vaddr_t va = ALPHA_PHYS_TO_K0SEG(
+		    map->dm_segs[0].ds_addr + offset - (bus_addr_t)t->_wbase);
+		vaddr_t conflict_va = va ^ (vaddr_t)lcp->lc_bcache_size;
+		bus_size_t i;
+
+		/*
+		 * Ensure CPU stores are committed to L1 before we read
+		 * the conflict address.  Without this mb, stores may still
+		 * be in the Alpha write buffer; the subsequent conflict read
+		 * would find no dirty L1 line to evict, leaving the write
+		 * stuck in L1 and never reaching Bcache or DRAM.
+		 */
+		alpha_mb();
+
+		/* Evict dirty Bcache lines to DRAM via conflict-eviction */
+		for (i = 0; i < len; i += 32)
+			(void)*(volatile uint8_t *)(conflict_va + i);
+
+	}
+	alpha_mb();
 }
 
 /*

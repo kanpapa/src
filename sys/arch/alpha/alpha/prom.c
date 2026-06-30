@@ -89,7 +89,8 @@ bool
 prom_uses_prom_console(void)
 {
 #ifdef _PROM_MAY_USE_PROM_CONSOLE
-	return (cputype == ST_DEC_7000 || cputype == ST_DEC_21000);
+	return (cputype == ST_DEC_7000 || cputype == ST_DEC_21000 ||
+	    cputype == ST_DEC_APXVME_64);
 #else
 	return false;
 #endif
@@ -295,6 +296,17 @@ prom_cache_sync(void)
  * is called in alpha_init. This is due to the hard coded address
  * of the console area.
  */
+/*
+ * Declared in sys/kern/init_main.c; set to 1 just before /sbin/init is
+ * exec'd.  At that point the scheduler has been running long enough that
+ * lwp0's PCB (at physical 0x10a000 on AXPvme 230) has been evicted from
+ * L1 to the Bcache.  The SRM PROM callback writes to 0x10a000 via K1SEG,
+ * which probes the Bcache; on AXPvme 230 the external Bcache controller
+ * does not respond to the probe/invalidation protocol, so this hangs.
+ * Suppress all PROM console output after start_init_exec to avoid this.
+ */
+extern int start_init_exec;
+
 void
 promcnputc(dev_t dev, int c)
 {
@@ -303,6 +315,19 @@ promcnputc(dev_t dev, int c)
 
 	/* XXX */
 	if (alpha_is_qemu)
+		return;
+
+	/*
+	 * On AXPvme 230 the external Bcache controller does not respond to
+	 * K1SEG probe/invalidation.  The SRM PROM callback writes to
+	 * physical 0x10a000 (lwp0 PCB / PROM scratch area) via K1SEG on
+	 * every character output.  After /sbin/init exec begins, the L1
+	 * cache line for 0x10a000 has been evicted to the Bcache (dirty),
+	 * causing the K1SEG probe to hang indefinitely.  Skip the PROM call
+	 * once init is exec'd.  Kernel panics after this point are silent;
+	 * implement a Z8530 SCC console driver to regain output.
+	 */
+	if (cputype == ST_DEC_AXPVME_64 && start_init_exec)
 		return;
 
 	prom_enter();
@@ -328,6 +353,8 @@ promcngetc(dev_t dev)
 	/* XXX */
 	if (alpha_is_qemu)
 		return 0;
+	if (cputype == ST_DEC_AXPVME_64 && start_init_exec)
+		return 0;
 
 	for (;;) {
 		prom_enter();
@@ -350,6 +377,8 @@ promcnlookc(dev_t dev, char *cp)
 
 	/* XXX */
 	if (alpha_is_qemu)
+		return 0;
+	if (cputype == ST_DEC_AXPVME_64 && start_init_exec)
 		return 0;
 
 	prom_enter();

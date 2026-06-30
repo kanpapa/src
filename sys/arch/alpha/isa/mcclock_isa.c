@@ -46,6 +46,8 @@ __KERNEL_RCSID(0, "$NetBSD: mcclock_isa.c,v 1.22 2024/03/06 06:30:49 thorpej Exp
 
 #include <alpha/alpha/mcclockvar.h>
 
+#include <machine/rpb.h>	/* cputype, ST_DEC_AXPVME_64 */
+
 static int	mcclock_isa_match(device_t, cfdata_t, void *);
 static void	mcclock_isa_attach(device_t, device_t, void *);
 
@@ -60,6 +62,14 @@ mcclock_isa_match(device_t parent, cfdata_t cf, void *aux)
 {
 	struct isa_attach_args *ia = aux;
 	bus_space_handle_t ioh;
+
+	/*
+	 * AXPvme 230 has a DS1386 TOY clock at ISbus 0x8000 instead of
+	 * the SIO's internal MC146818.  The DS1386 driver handles clock
+	 * attachment for that platform; suppress mcclock here.
+	 */
+	if (cputype == ST_DEC_AXPVME_64)
+		return 0;
 
 	if (ia->ia_nio < 1 ||
 	    (ia->ia_io[0].ir_addr != ISA_UNKNOWN_PORT &&

@@ -59,6 +59,7 @@ struct rpb {
 #define	ST_AVALON_A12		8		/* XXX Avalon Multicomputer */
 #define	ST_DEC_2100_A500	9		/* "Sable" */
 #define	ST_DEC_APXVME_64	10		/* "AXPvme" (VME) */
+#define	ST_DEC_AXPVME_64	ST_DEC_APXVME_64	/* preferred spelling */
 #define	ST_DEC_AXPPCI_33	11		/* "NoName" (PCI/ISA) */
 #define	ST_DEC_21000		12		/* "TurboLaser" (PCI/EISA) */
 #define	ST_DEC_2100_A50		13		/* "Avanti" (PCI/ISA) */

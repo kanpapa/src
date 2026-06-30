@@ -287,10 +287,6 @@ interrupt(unsigned long a0, unsigned long a1, unsigned long a2,
 		break;
 
 	case ALPHA_INTR_PASSIVE:
-#if 0
-		printf("WARNING: received passive release interrupt vec "
-		    "0x%lx\n", a1);
-#endif
 		break;
 
 	default:

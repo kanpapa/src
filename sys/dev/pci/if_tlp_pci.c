@@ -50,6 +50,13 @@ __KERNEL_RCSID(0, "$NetBSD: if_tlp_pci.c,v 1.131 2023/12/20 04:32:30 thorpej Exp
 
 #include <machine/endian.h>
 
+#ifdef __alpha__
+#include "opt_dec_axpvme_64.h"
+#ifdef DEC_AXPVME_64
+#include <machine/rpb.h>
+#endif
+#endif
+
 #include <net/if.h>
 #include <net/if_dl.h>
 #include <net/if_media.h>
@@ -705,6 +712,25 @@ tlp_pci_attach(device_t parent, device_t self, void *aux)
 		 */
 		sc->sc_mediasw = &tlp_21040_mediasw;
 
+#if defined(__alpha__) && defined(DEC_AXPVME_64)
+		/*
+		 * AXPvme 230: the on-board 21040 is AUI-only.  Print the
+		 * SIA values the SRM programmed before tlp_reset clears them,
+		 * then select the AUI-only mediasw so ifm_cur points at the
+		 * AUI entry (patched to SRM values after tlp_attach below).
+		 */
+		if (cputype == ST_DEC_APXVME_64) {
+			aprint_normal_dev(self,
+			    "SRM: OPMODE=0x%08x "
+			    "CONN=0x%08x TXR=0x%08x GEN=0x%08x\n",
+			    TULIP_READ(sc, CSR_OPMODE),
+			    TULIP_READ(sc, CSR_SIACONN),
+			    TULIP_READ(sc, CSR_SIATXRX),
+			    TULIP_READ(sc, CSR_SIAGEN));
+			sc->sc_mediasw = &tlp_21040_auibnc_mediasw;
+		}
+#endif
+
 		/*
 		 * Deal with any quirks this board might have.
 		 */
@@ -1035,6 +1061,27 @@ tlp_pci_attach(device_t parent, device_t self, void *aux)
 	error = tlp_attach(sc, enaddr);
 	if (error)
 		goto fail;
+
+#if defined(__alpha__) && defined(DEC_AXPVME_64)
+	/*
+	 * AXPvme 230: patch the AUI media entry to use the SIA values
+	 * the SRM firmware programs for successful AUI boot.
+	 *
+	 * The standard NetBSD AUI values (SIACONN=0xef09, SIAGEN=0x0006)
+	 * set IE, OE1_3 and OE2_4; the SRM uses SIACONN=0x8f09 (IE=0,
+	 * OE1_3=0, OE2_4=0, OE5_6_7=1) and SIAGEN=0x000e (adds bit 3).
+	 */
+	if (cputype == ST_DEC_APXVME_64 && sc->sc_chip == TULIP_CHIP_21040) {
+		struct ifmedia_entry *ife = sc->sc_mii.mii_media.ifm_cur;
+		if (ife != NULL && ife->ifm_aux != NULL) {
+			struct tulip_21x4x_media *tm = ife->ifm_aux;
+			tm->tm_siaconn = 0x00008f09;
+			tm->tm_siatxrx = 0x00000705;
+			tm->tm_siagen  = 0x0000000e;
+		}
+	}
+#endif
+
 	return;
 
 fail:

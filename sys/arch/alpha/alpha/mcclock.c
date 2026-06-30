@@ -200,17 +200,33 @@ mcclock_attach(struct mcclock_softc *msc)
 
 #define NLOOP	4
 
+/*
+ * Timeout for one MC146818 16Hz period: 125 ms expressed in PCC cycles.
+ * ci_pcc_freq is already set from hwrpb->rpb_cc_freq by the time
+ * mcclock_attach() is called, so this is always a reasonable bound.
+ * A fallback of 30M cycles covers up to ~240 MHz CPUs.
+ */
+static inline uint32_t
+mcclock_pf_timeout(const struct cpu_info *ci)
+{
+	uint32_t t = (uint32_t)(ci->ci_pcc_freq / 8);	/* 125 ms */
+	return t != 0 ? t : 30000000U;
+}
+
 static void
 mcclock_set_pcc_freq(struct mc146818_softc *sc)
 {
 	struct cpu_info *ci;
 	uint64_t freq;
 	uint32_t ctrdiff[NLOOP], pcc_start, pcc_end;
+	uint32_t timeout, tstart;
 	uint8_t reg_a;
 	int i;
 
 	KASSERT(cold);
 	KASSERT(CPU_IS_PRIMARY(curcpu()));
+
+	timeout = mcclock_pf_timeout(curcpu());
 
 	/* save REG_A */
 	reg_a = (*sc->sc_mcread)(sc, MC_REGA);
@@ -235,13 +251,19 @@ mcclock_set_pcc_freq(struct mc146818_softc *sc)
 	for (i = 0; i < NLOOP; i++) {
 
 		/* wait till the periodic interrupt flag is set */
-		while (((*sc->sc_mcread)(sc, MC_REGC) & MC_REGC_PF) == 0)
-			;
+		tstart = cpu_counter32();
+		while (((*sc->sc_mcread)(sc, MC_REGC) & MC_REGC_PF) == 0) {
+			if ((uint32_t)(cpu_counter32() - tstart) > timeout)
+				goto fail;
+		}
 		pcc_start = cpu_counter32();
 
 		/* wait till the periodic interrupt flag is set again */
-		while (((*sc->sc_mcread)(sc, MC_REGC) & MC_REGC_PF) == 0)
-			;
+		tstart = cpu_counter32();
+		while (((*sc->sc_mcread)(sc, MC_REGC) & MC_REGC_PF) == 0) {
+			if ((uint32_t)(cpu_counter32() - tstart) > timeout)
+				goto fail;
+		}
 		pcc_end = cpu_counter32();
 
 		ctrdiff[i] = pcc_end - pcc_start;
@@ -258,6 +280,17 @@ mcclock_set_pcc_freq(struct mc146818_softc *sc)
 	/* XXX assume all processors have the same clock and frequency */
 	for (ci = &cpu_info_primary; ci; ci = ci->ci_next)
 		ci->ci_pcc_freq = freq;
+	return;
+
+fail:
+	/*
+	 * MC146818 periodic flag never set — oscillator not connected or
+	 * not functional (e.g., AXPvme 230 uses DS1386 instead).
+	 * ci_pcc_freq remains as cpu_attach() set it from hwrpb->rpb_cc_freq.
+	 */
+	printf("mcclock: oscillator not responding, using firmware PCC frequency\n");
+	(*sc->sc_mcwrite)(sc, MC_REGA, reg_a);
+	(*sc->sc_mcwrite)(sc, MC_REGB, MC_REGB_BINARY | MC_REGB_24HR);
 }
 
 static void
