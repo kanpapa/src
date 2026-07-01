@@ -43,6 +43,8 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 #include <alpha/pci/lcareg.h>
 #include <alpha/pci/lcavar.h>
+#include <alpha/isa/zs_isa.h>
+#include <dev/ic/z8530reg.h>
 
 void dec_axpvme_64_init(void);
 static void dec_axpvme_64_cons_init(void);
@@ -121,10 +123,53 @@ dec_axpvme_64_init(void)
 static void
 dec_axpvme_64_cons_init(void)
 {
+	struct lca_config *lcp;
+	const struct ctb_tt *ctb;
+	bus_space_tag_t iot;
+	bus_space_handle_t ioh;
+	bus_addr_t csraddr;
+	uint8_t status;
+	int error;
+
+	lcp = lca_preinit();
+	iot = &lcp->lc_iot;
+
+	ctb = (const struct ctb_tt *)
+	    (((const char *)hwrpb) + hwrpb->rpb_ctb_off);
+
+	if (ctb->ctb_type != CTB_PRINTERPORT) {
+		printf("axpvme cons_init: CTB type %llu, using promcons\n",
+		    (unsigned long long)ctb->ctb_type);
+		return;
+	}
+
+	csraddr = (bus_addr_t)ctb->ctb_csr;
+
 	/*
-	 * The SRM PROM callback console (promcons) is used throughout.
-	 * init_bootstrap_console() has already set cn_tab = &promcons.
+	 * Probe Channel A RR0 before claiming the console.
+	 * Channel A ctrl is at csraddr+0x08 (UART_BASE_ADDR+08).
+	 * All printfs here still go to promcons (cn_tab not yet changed).
 	 */
+	if (bus_space_map(iot, csraddr, 0x10, 0, &ioh) != 0) {
+		printf("axpvme cons_init: map failed, using promcons\n");
+		return;
+	}
+	DELAY(2);
+	status = bus_space_read_1(iot, ioh, 0x08);	/* Ch A RR0 */
+	bus_space_unmap(iot, ioh, 0x10);
+
+	printf("axpvme cons_init: Z8530 ChA RR0=0x%02x (TX_RDY=%d RX_RDY=%d)\n",
+	    status,
+	    (status & ZSRR0_TX_READY) != 0,
+	    (status & ZSRR0_RX_READY) != 0);
+
+	error = zsisa_cnattach(iot, csraddr);
+	if (error != 0) {
+		printf("axpvme cons_init: attach failed (%d), using promcons\n",
+		    error);
+		return;
+	}
+	/* cn_tab now points to zsisa_consdev; subsequent output via Z8530 */
 }
 
 static void

@@ -873,3 +873,102 @@ Z8530 SCC ドライバを実装すれば物理コンソールも復活する。
 
 1. 長期: Z8530 SCC コンソールドライバの実装（PROM console からの脱却）
 2. 長期: PCI interrupt routing の整理（`pci_axpvme_64.c`）
+
+---
+
+## 2026-07-01: Z8530 SCC カーネルコンソール実装
+
+### 背景
+
+NFS ブート・SSH アクセスは達成済みだったが、PROM console の `start_init_exec` ガードにより
+init 起動後はカーネルメッセージが出力されなくなっていた。Z8530 SCC（ISA I/O 0x6000）を
+直接駆動するポールドコンソールドライバを実装してこれを解消した。
+
+### 調査: ハードウェアレイアウト（Technical Description 参照）
+
+`AXPvme Single-Board Computer Technical Description.pdf` の Figure 1-43（SCC Memory Map）より：
+
+```
+UART_BASE_ADDR = ctb_csr = 0x6000
+
+ISA I/O offset   Read (Rd)    Write (Wr)
++00              Ch B RR0     Ch B WR0   (control) — uncommitted
++04              Ch B Rx      Ch B Tx    (data)
++08              Ch A RR0     Ch A WR0   (control) — user console
++0C              Ch A Rx      Ch A Tx    (data)
+```
+
+- Channel A が user console（TD 1.12.4節）
+- 各レジスタは ISA I/O 空間内で 4 バイト境界（ロングワード）に配置
+- `ctb_csr` は SCC 全体のベースアドレス（Channel B のアドレス）
+
+CTB（Console Terminal Block）形式は `struct ctb_tt`：
+- `ctb_type = CTB_PRINTERPORT (2)`
+- `ctb_csr  = 0x6000`（UART_BASE_ADDR）
+- `ctb_baud = 9600`
+
+### 実装ファイル
+
+**新規作成: `sys/arch/alpha/isa/zs_isa.c`**
+
+ポールド Z8530 コンソール。重要な設定値：
+- `ZSISA_CTRL = 0x08`（Channel A WR0/RR0）
+- `ZSISA_DATA = 0x0C`（Channel A TX/RX data）
+- `ZSISA_MAPSIZE = 0x10`（0x6000〜0x600F をマップ）
+- TX_READY = `ZSRR0_TX_READY` (bit 2)、RX_READY = `ZSRR0_RX_READY` (bit 0)
+- SRM がすでに Channel A を 9600 baud 8N1 に設定済み → ドライバ側で再設定不要
+- `zsisa_cnattach()` で先代コンソール（promcons）の `cn_dev` を引き継ぐ
+  （`cn_dev = NODEV` のまま切り替えると `cnopen: no console device` でパニックするため）
+
+**新規作成: `sys/arch/alpha/isa/zs_isa.h`**
+
+`zsisa_cnattach()` のプロトタイプ。
+
+**変更: `sys/arch/alpha/alpha/dec_axpvme_64.c`**
+
+`dec_axpvme_64_cons_init()` に実装：
+- CTB から `ctb_csr`（= 0x6000）を読み取り
+- Channel A RR0（offset 0x08）をプローブして TX_RDY を確認
+- `zsisa_cnattach()` を呼び出して Z8530 を kernel console に設定
+
+**変更: `sys/arch/alpha/conf/files.alpha`**
+
+- `file arch/alpha/isa/zs_isa.c  dec_axpvme_64` を追加
+- `DEC_AXPVME_64` の defflag から `alpha_pci_consinit` を削除（未使用）
+
+### デバッグで遭遇したバグと解決
+
+**バグ 1: Channel B を誤って使用、存在しない ISA ポートへの書き込み**
+
+最初の実装では offset 0（Ch B ctrl）と offset 1（存在しない ISA 0x6001）を使用していた。
+ISA 0x6001 は SCC のどのレジスタにも対応せず、バスタイムアウト → hang。
+
+解決: Technical Description を確認し、Channel A が offset 0x08/0x0C にあることを把握して修正。
+**教訓: ハードウェアドライバ実装前に必ず Technical Description を確認すること。**
+
+**バグ 2: `cn_dev = NODEV` による `cnopen` パニック**
+
+init が `/dev/console` を open しようとすると `cnopen()` が `cn_dev == NODEV` を検出して
+`panic: cnopen: no console device` を起こした。
+
+解決: `zsisa_cnattach()` で `zsisa_consdev.cn_dev = cn_tab->cn_dev`（promcons の device 番号）を引き継ぐ。
+カーネル `printf` は Z8530 経由で出力、`/dev/console` の open は promcons device として処理される。
+
+**バグ 3: `axpvme_poll` デバッグ出力が 2 秒ごとに連続出力**
+
+`pci_axpvme_64.c` の debug print 条件 `(axpvme_poll_ticks & 0x27ff) == 0` が
+意図した 10 秒間隔ではなく 2 秒間隔で発火していた（ビットマスクの誤り）。
+
+解決: ポーリングが正常動作（NFS・SSH 稼働確認済み）のためデバッグ print を削除。
+
+### 達成された状態
+
+- Z8530 Channel A（9600 baud 8N1）がカーネルコンソールとして機能
+- カーネルのブートメッセージが実機シリアル端末に表示される
+- NFS ルートマウント、SSH ログイン、ps 等の動作確認済み
+- `start_init_exec` ガード後もシリアル端末にカーネルメッセージが出力される
+
+### 残作業
+
+- Z8530 の本格的な `zstty` TTY ドライバ実装（ユーザ空間から `/dev/console` への R/W）
+- シリアル端末でのログインセッション（getty → login）

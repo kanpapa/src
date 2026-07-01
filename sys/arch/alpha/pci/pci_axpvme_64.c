@@ -74,9 +74,6 @@ axpvme_poll(void *arg)
 	int i;
 
 	axpvme_poll_ticks++;
-	if (axpvme_poll_ticks <= 5 || (axpvme_poll_ticks & 0x27ff) == 0)
-		printf("axpvme_poll: tick %u count=%d\n",
-		    axpvme_poll_ticks, axpvme_poll_count);
 
 	/*
 	 * Call ih_real_fn directly, bypassing alpha_shared_intr_wrapper.
