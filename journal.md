@@ -1179,3 +1179,20 @@ dead code となっていた。
 
 boot → login → shutdown まで Z8530 シリアルコンソールで問題なく動作確認済み。
 カーネルメッセージが init 起動後も物理コンソールに出力されるようになった。
+
+```
+Starting postfix.
+Starting inetd.
+Starting ftpd.
+Starting cron.
+Thu Jul  3 19:23:23 UTC 2064
+
+NetBSD/alpha (client) (constty)
+
+login: root
+Jul  3 19:24:01 client login: ROOT LOGIN (root) on tty constty
+NetBSD 11.99.6 (GENERIC-$Revision: 1.421 $) #123: Fri Jul  3 08:17:15 JST 2026
+client#
+```
+
+コミット: `3a1247f3f07`
