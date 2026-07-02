@@ -199,7 +199,6 @@ zsisa_match(device_t parent, cfdata_t cf, void *aux)
 	struct isa_attach_args *ia = aux;
 	bus_space_handle_t ioh;
 	uint8_t rr0;
-	bool already_mapped;
 
 	/* Only present on AXPvme 230. */
 	if (cputype != ST_DEC_AXPVME_64)
@@ -224,29 +223,27 @@ zsisa_match(device_t parent, cfdata_t cf, void *aux)
 		return 0;
 
 	/*
-	 * If zsisa_cnattach() has already mapped the ports, reuse that
-	 * mapping for the probe read rather than mapping again.
+	 * If zsisa_cnattach() has already mapped the ports, the hardware is
+	 * already verified — skip the TX_RDY probe.  During ISA autoconf the
+	 * Z8530 is actively used by the kernel console; a single-shot read of
+	 * RR0 would catch TX_RDY=0 while a character is being transmitted and
+	 * incorrectly return "not found".
 	 */
-	already_mapped = (zsisa_iot != NULL);
-	if (already_mapped) {
-		ioh = zsisa_ioh;
-	} else {
-		if (bus_space_map(ia->ia_iot, ZSISA_BASE_PORT,
-		    ZSISA_MAPSIZE, 0, &ioh))
-			return 0;
-	}
+	if (zsisa_iot != NULL)
+		goto found;
 
-	/* Probe: read Ch A RR0.  TX_RDY (bit 2) should be set. */
+	if (bus_space_map(ia->ia_iot, ZSISA_BASE_PORT, ZSISA_MAPSIZE, 0, &ioh))
+		return 0;
+
+	/* Probe: read Ch A RR0.  TX_RDY (bit 2) should be set when idle. */
 	DELAY(2);
-	if (already_mapped)
-		rr0 = bus_space_read_1(zsisa_iot, ioh, ZSISA_CTRL);
-	else {
-		rr0 = bus_space_read_1(ia->ia_iot, ioh, ZSISA_CTRL);
-		bus_space_unmap(ia->ia_iot, ioh, ZSISA_MAPSIZE);
-	}
+	rr0 = bus_space_read_1(ia->ia_iot, ioh, ZSISA_CTRL);
+	bus_space_unmap(ia->ia_iot, ioh, ZSISA_MAPSIZE);
 
 	if (!(rr0 & ZSRR0_TX_READY))
 		return 0;
+
+found:
 
 	ia->ia_io[0].ir_addr = ZSISA_BASE_PORT;
 	ia->ia_io[0].ir_size = ZSISA_MAPSIZE;
