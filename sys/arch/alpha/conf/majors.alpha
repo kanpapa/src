@@ -79,6 +79,7 @@ device-major	wsfont		char 76			wsfont
 device-major	joy		char 78			joy
 device-major	twe		char 79			twe
 device-major	sysmon		char 80			sysmon
+device-major	zsisa		char 82			zsisa
 
 # Majors up to 143 are reserved for machine-dependent drivers.
 # New machine-independent driver majors are assigned in 

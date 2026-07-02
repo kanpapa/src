@@ -713,22 +713,9 @@ tlp_pci_attach(device_t parent, device_t self, void *aux)
 		sc->sc_mediasw = &tlp_21040_mediasw;
 
 #if defined(__alpha__) && defined(DEC_AXPVME_64)
-		/*
-		 * AXPvme 230: the on-board 21040 is AUI-only.  Print the
-		 * SIA values the SRM programmed before tlp_reset clears them,
-		 * then select the AUI-only mediasw so ifm_cur points at the
-		 * AUI entry (patched to SRM values after tlp_attach below).
-		 */
-		if (cputype == ST_DEC_APXVME_64) {
-			aprint_normal_dev(self,
-			    "SRM: OPMODE=0x%08x "
-			    "CONN=0x%08x TXR=0x%08x GEN=0x%08x\n",
-			    TULIP_READ(sc, CSR_OPMODE),
-			    TULIP_READ(sc, CSR_SIACONN),
-			    TULIP_READ(sc, CSR_SIATXRX),
-			    TULIP_READ(sc, CSR_SIAGEN));
+		/* AXPvme 230: on-board 21040 is AUI-only. */
+		if (cputype == ST_DEC_APXVME_64)
 			sc->sc_mediasw = &tlp_21040_auibnc_mediasw;
-		}
 #endif
 
 		/*

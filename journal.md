@@ -972,3 +972,210 @@ init が `/dev/console` を open しようとすると `cnopen()` が `cn_dev ==
 
 - Z8530 の本格的な `zstty` TTY ドライバ実装（ユーザ空間から `/dev/console` への R/W）
 - シリアル端末でのログインセッション（getty → login）
+
+---
+
+## 2026-07-03: Z8530 SCC 割り込み調査 と zsisa TTY ドライバ実装
+
+### 割り込み構成の確認（AXPvme TD Section 1.17 / Figure 1-64）
+
+Technical Description を確認し、Z8530 UART の割り込み配線を明らかにした：
+
+- UART → **SIO IRQ4**（標準 ISA COM1 と同じ）
+- SIO は LCA CPU IRQ\<1\> に接続
+- VIC64 も UART を LICR5 (rank 16) で処理可能（IRQ\<2\> 経由）
+
+**IRQ4 が使えない理由：**  
+AXPvme 230 の SRM PAL は VIC64 (CPU IRQ\<2\>) 向けに設計されており、SIO 割り込み (CPU IRQ\<1\>) の処理時に **PCI IACK サイクルを実行しない**。IACK なしで 8259 割り込みが発生すると `scb_stray → printf → PROM コールバック → Bcache 無効化プロトコル → HANG` となる。このため IRQ4 を含む全 ISA IRQ（IRQ1/IRQ2 以外）を 8259 でマスクしている（`pci_axpvme_64.c` 参照）。
+
+### zsisa TTY ドライバ設計・実装
+
+**方針：**
+- 割り込みを使わずポーリング TTY を実装
+- `z8530sc`/`zstty` フレームワークは使用しない（ハードウェア割り込みが前提のため）
+- RX: 1024 Hz callout で `ZSRR0_RX_READY` をポーリング → `l_rint` に流す
+- TX: `t_oproc = zsisa_tty_start` でブロッキングポーリング TX
+- ISA autoconf `CFATTACH_DECL_NEW(zsisa, ...)` で autoconf に組み込む
+- `zsisa_attach` 後に `cn_tab->cn_dev` を zsisa0 のデバイス番号に更新
+
+**修正ファイル：**
+
+| ファイル | 変更内容 |
+|--------|--------|
+| `sys/arch/alpha/isa/zs_isa.c` | ISA attachment + polled TTY (cdev ops, callout RX, polled TX) を追加 |
+| `sys/arch/alpha/isa/zs_isa.h` | `zsisa_cdevsw` extern 追加 |
+| `sys/arch/alpha/conf/files.alpha` | `device zsisa: tty` / `attach zsisa at isa` 追加 |
+| `sys/arch/alpha/conf/AXPVME` | `zsisa0 at isa? port 0x6000` 追加 |
+
+**ビルド時に発生したバグと修正：**
+
+1. `dev_type_stop` のシグネチャ誤り  
+   - 誤: `void zsisa_stop(dev_t dev, int flag)` → 正: `void zsisa_stop(struct tty *tp, int flag)`
+   - `dev_stop_t = void(struct tty *, int)` が正しいシグネチャ
+
+2. `zsisa_match` probe で `already_mapped` 時に `ia->ia_iot` を使っていた問題  
+   - `zsisa_cnattach` が使う `lcp->lc_iot` と `ia->ia_iot` は別ポインタ
+   - `already_mapped = true` のときは `zsisa_iot` と `zsisa_ioh` を使うよう修正
+
+**コミット:** `e04c4bbfb75`
+
+### 残作業
+
+- AXPvme 230 実機でテスト：zsisa0 attach → cn_dev 更新 → getty/login 動作確認
+- NFS root の `/etc/ttys` または `inittab` で `/dev/console` に getty を設定
+- 必要なら `/dev/zsisa0` の dev ファイル作成（major 番号は動的割り当て）
+
+---
+
+## 2026-07-03: `panic: sn->sn_opencnt` 修正 — `device-major zsisa` の欠落
+
+### 症状
+
+zsisa0 が attach された後（t=1.0s）、init (pid 104) が起動し
+t≈13.9s で以下のパニックが発生した：
+
+```
+panic: kernel diagnostic assertion "sn->sn_opencnt" failed: file
+    "sys/miscfs/specfs/spec_vnops.c", line 1722
+Stopped in pid 104.104 (init) at netbsd:cpu_Debugger+0x4
+```
+
+### 根本原因: `device-major zsisa` が `majors.alpha` に未登録
+
+`zsisa_attach()` 内：
+
+```c
+maj = cdevsw_lookup_major(&zsisa_cdevsw);  // → NODEVMAJOR = -1
+dev = makedev(maj, device_unit(self));      // → makedev(-1, 0) = ゴミ値
+cn_tab->cn_dev = dev;                       // → cn_dev にゴミ値
+```
+
+`cdevsw_lookup_major(&zsisa_cdevsw)` は cdevsw テーブルを線形検索するが、
+`device-major zsisa char N zsisa` エントリが `majors.alpha` に存在しないため
+`NODEVMAJOR` (-1) を返す。
+
+`makedev(-1, 0)` は存在しない major に対応するゴミ dev_t になる。
+その結果 `cn_tab->cn_dev` がゴミ値に設定される。
+
+#### パニックに至るシーケンス
+
+1. init が `/dev/console` を **第一回 open** → `cnopen()` 呼び出し
+2. `cndev = cn_tab->cn_dev = ゴミ値`  
+   `cdevvp(ゴミ値, &cn_devvp[0])` → `vnode_A`（sn_opencnt=0）を作成して `cn_devvp[0]` に格納
+3. `VOP_OPEN(vnode_A)` → `spec_open(vnode_A)` → `sn_opencnt=1` →  
+   `cdev_open(ゴミ値, ...)` → `cdevsw_lookup(ゴミ値)` → NULL → **ENXIO**
+4. `spec_open` はロールバック：`sn_opencnt-- = 0`
+5. `cnopen()` は ENXIO を返す。`cn_devvp[0] = vnode_A`（sn_opencnt=0）のまま
+
+6. init が `/dev/console` を **第二回 open** → `cnopen()` 呼び出し
+7. `cn_devvp[0] != NULLVP` → **VOP_OPEN を呼ばずに return 0（成功）**
+   `vnode_A->sn_opencnt` は依然 0
+
+8. init が fd を **close** → `spec_close(CN_VN)` → `cnclose()` →  
+   `VOP_CLOSE(cn_devvp[0] = vnode_A)` → `spec_close(vnode_A)` →  
+   `KASSERT(sn->sn_opencnt)` ← sn_opencnt=0 → **PANIC**
+
+### 修正: `majors.alpha` に `device-major zsisa char 82 zsisa` を追加
+
+`sys/arch/alpha/conf/majors.alpha`:
+```
+device-major	sysmon		char 80			sysmon
+device-major	zsisa		char 82			zsisa    ← 追加
+```
+
+major 82 は既存エントリとの重複なし（コメント「Majors up to 143 are reserved for MD」）。
+
+**効果:**  
+- `cdevsw[82] = &zsisa_cdevsw` が generated `devsw.c` に登録される  
+- `cdevsw_lookup_major(&zsisa_cdevsw) = 82` が返る  
+- `cn_tab->cn_dev = makedev(82, 0)` = 正しい zsisa0 デバイス番号  
+- `cnopen()` → `VOP_OPEN(zsisa_vn)` → `spec_open` → `sn_opencnt=1` → `zsisa_open()` → 成功  
+- `cnclose()` → `VOP_CLOSE(zsisa_vn)` → `KASSERT(sn_opencnt=1)` ✓ パニックなし
+
+### NFS root への /dev/zsisa0 作成（ユーザーが手動で実施）
+
+```bash
+# NFS サーバーの root export ディレクトリで：
+mknod /export/client/root/dev/zsisa0 c 82 0
+chmod 600 /export/client/root/dev/zsisa0
+```
+
+`/dev/console` は major=0（console pseudo-device）を通じて zsisa0 に
+ルーティングされるため、getty は `/dev/console` を使えば /dev/zsisa0 なしでも動く。
+直接 `/dev/zsisa0` を使う場合（`/etc/ttys` 設定等）に必要。
+
+### ビルド結果
+
+ビルド成功 ✓（`~/obj/sys/arch/alpha/compile/AXPVME/netbsd`）
+
+生成確認:
+```
+devsw.c:298:  extern const struct cdevsw zsisa_cdevsw;
+devsw.c:401:  &zsisa_cdevsw,	//  82
+```
+
+### 変更ファイル
+
+| ファイル | 変更内容 |
+|--------|--------|
+| `sys/arch/alpha/conf/majors.alpha` | `device-major zsisa char 82 zsisa` を追加 |
+
+### 実機テスト結果 ✓（2026-07-03）
+
+**2026-07-03: Z8530 SCC 物理コンソールからの root ログイン成功。**
+
+```
+Starting cron.
+Thu Jul  3 19:23:07 UTC 2064
+
+NetBSD/alpha (client) (constty)
+
+login: root
+Jul  3 19:25:02 client login: ROOT LOGIN (root) on tty constty
+Last login: Tue Jul  1 19:24:47 2064 from 192.168.99.1 on pts/0
+...
+NetBSD 11.99.6 (GENERIC-$Revision: 1.421 $) #121: Fri Jul  3 07:33:26 JST 2026
+client# pwd
+/root
+client#
+```
+
+- `constty`（= zsisa0）上で getty が動作 ✓
+- root ログイン成功 ✓
+- PROM console ガードを撤廃せずとも物理コンソールが完全動作 ✓
+- Z8530 SCC ポールド TTY ドライバが完成
+
+---
+
+## 2026-07-03: PROM console `start_init_exec` ガードの撤廃
+
+### 背景
+
+Z8530 SCC ドライバ実装完了により、`zsisa_cnattach()` の時点で
+`cn_tab = &zsisa_consdev`（cn_putc = `zsisa_cnputc`）に切り替わる。
+以後 `printf` は `zsisa_cnputc` 経由となり、`promcnputc` は呼ばれない。
+
+`start_init_exec` ガードは「init exec 後に PROM callback が
+物理 `0x10a000`（lwp0 PCB）に K1SEG write → Bcache probe → ハング」を
+防ぐために追加したものだが、zsisa が console を引き継いだ後は
+dead code となっていた。
+
+### 変更内容（`sys/arch/alpha/alpha/prom.c`）
+
+- `extern int start_init_exec;` 宣言を削除
+- ガードコメントブロック（背景説明）を削除
+- `promcnputc` / `promcngetc` / `promcnlookc` の各ガード判定を削除:
+  ```c
+  // 削除:
+  if (cputype == ST_DEC_AXPVME_64 && start_init_exec)
+      return;   // (または return 0)
+  ```
+
+### ビルド結果
+
+ビルド成功 ✓（`~/obj/sys/arch/alpha/compile/AXPVME/netbsd`）
+
+### 実機テスト結果 ✓
+
+boot → login → shutdown まで Z8530 シリアルコンソールで問題なく動作確認済み。
+カーネルメッセージが init 起動後も物理コンソールに出力されるようになった。
