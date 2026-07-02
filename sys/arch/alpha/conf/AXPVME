@@ -406,6 +406,7 @@ eisa*	at	eisabus?		# "eisabus" interface attribute
 # ISA devices
 mcclock* at	isa? port 0x70		# MC146818 (suppressed on AXPvme 230, see mcclock_isa.c)
 axprtc*	at	isa? port 0x8000	# DS1386 TOY clock on AXPvme 230
+zsisa0	at	isa? port 0x6000	# Z8530 SCC TTY (Ch A, polled)
 pckbc*	at	isa?				# PC keyboard controller
 pckbd*	at	pckbc?				# PC keyboard (kbd port)
 pms*	at	pckbc?				# PS/2-style mouse (aux port)

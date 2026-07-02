@@ -436,8 +436,10 @@ device	axprtc
 attach	axprtc at isa
 file	arch/alpha/isa/ds1386.c		axprtc
 
-# Z8530 SCC polled console for DEC AXPvme 230 (ISA 0x6000)
-file	arch/alpha/isa/zs_isa.c		dec_axpvme_64
+# Z8530 SCC polled console and TTY driver for DEC AXPvme 230 (ISA 0x6000)
+device	zsisa: tty
+attach	zsisa at isa
+file	arch/alpha/isa/zs_isa.c		zsisa | dec_axpvme_64
 
 
 #
