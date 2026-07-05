@@ -1,4 +1,4 @@
-# AXPvme 230 ポーティング開発ジャーナル
+# DEC AXPvme 230 ポーティング開発ジャーナル
 
 # journal.md
 
