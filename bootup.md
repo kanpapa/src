@@ -12,8 +12,14 @@ sudo systemctl start dnsmasq
 
 ### start tcpdump
 
+USB-C LAN Adapter
 ```
 sudo tcpdump -i enx6084bd485c85 -n host 192.168.99.10
+```
+
+i210 LAN Card
+```
+sudo tcpdump -i enp5s0 -n host 192.168.99.10
 ```
 
 ### deploy kernel
