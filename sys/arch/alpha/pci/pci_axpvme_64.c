@@ -60,6 +60,15 @@ static bus_space_tag_t axpvme_iot;
 static struct callout axpvme_poll_callout;
 
 /*
+ * 5x7 dot-matrix LED display (MOD_DISP_REG = 0x2400).
+ * Character in bits <6:0>; bit <7> increases brightness.
+ * Spinner sequence |/-\ uses ASCII values: 0x7C, 0x2F, 0x2D, 0x5C.
+ */
+#define AXPVME_MOD_DISP_REG	0x2400
+static bus_space_handle_t axpvme_led_ioh;
+static int axpvme_led_mapped;
+
+/*
  * Per-interrupt-handle poll list entry.
  * We maintain a small static array of established handlers to call each tick.
  */
@@ -71,6 +80,7 @@ static void
 axpvme_poll(void *arg)
 {
 	static unsigned int axpvme_poll_ticks;
+	static const uint8_t spinner[] = { 0x7C, 0x2F, 0x2D, 0x5C }; /* |/-\ */
 	int i;
 
 	axpvme_poll_ticks++;
@@ -89,6 +99,14 @@ axpvme_poll(void *arg)
 		if (ih != NULL && ih->ih_real_fn != NULL)
 			(*ih->ih_real_fn)(ih->ih_real_arg);
 	}
+
+	/* Advance LED spinner at ~4 Hz (every 256 ticks of 1024 Hz). */
+	if (axpvme_led_mapped && (axpvme_poll_ticks & 0xff) == 0) {
+		bus_space_write_1(axpvme_iot, axpvme_led_ioh, 0,
+		    spinner[(axpvme_poll_ticks >> 8) & 3]);
+		alpha_mb();
+	}
+
 	callout_schedule(&axpvme_poll_callout, 1);
 }
 
@@ -242,6 +260,15 @@ pci_axpvme_64_pickintr(void *core, bus_space_tag_t iot, bus_space_tag_t memt,
 		} else {
 			printf("axpvme: HBEAT_CLR_REG map failed!\n");
 		}
+	}
+
+	/* Map the 5x7 dot-matrix LED display register (MOD_DISP_REG). */
+	if (bus_space_map(axpvme_iot, AXPVME_MOD_DISP_REG, 4, 0,
+	    &axpvme_led_ioh) == 0) {
+		axpvme_led_mapped = 1;
+		/* Clear the power-on ":::" (0x7F) with the first spinner frame. */
+		bus_space_write_1(axpvme_iot, axpvme_led_ioh, 0, 0x7C); /* | */
+		alpha_mb();
 	}
 #else
 	panic("pci_axpvme_64_pickintr: no I/O interrupt handler (no sio)");

@@ -1196,3 +1196,47 @@ client#
 ```
 
 コミット: `3a1247f3f07`
+
+## 2026-07-05: フロントパネル 5×7 ドットマトリクス LED スピナー実装
+
+### 背景
+
+AXPvme 230 フロントパネルの 5×7 ドットマトリクス LED（SRM 動作中は棒が回転するアニメーションを表示）を NetBSD でも動かしたいという要求。
+
+Technical Description PDF の `Section 1.10.1 Module Display Control Register` を調査して実装した。
+
+### TD から判明したレジスタ仕様
+
+| 項目 | 内容 |
+|------|------|
+| アドレス | `MOD_DISP_REG = 0x2400h` (PCI I/O アドレス) |
+| データ幅 | 8 ビット（ISbus byte アクセス） |
+| ビット<6:0> | 表示文字（96 文字セット、ASCII 互換） |
+| ビット<7> | 輝度制御（1 = フル輝度） |
+| リセット時 | 0x7F（":::" 全点灯）でフル輝度 |
+
+スピナー文字はいずれも文字セット内に存在（ASCII 値そのまま）:
+- `|` = 0x7C、`/` = 0x2F、`-` = 0x2D、`\` = 0x5C
+
+ISbus I/O アクセスは HBEAT_CLR_REG (0x2000) と同一パターン（`bus_space_map` + `bus_space_write_1`）で可能。
+
+### 実装内容（`sys/arch/alpha/pci/pci_axpvme_64.c`）
+
+1. **マクロと静的変数を追加**
+   - `AXPVME_MOD_DISP_REG 0x2400`
+   - `axpvme_led_ioh`（マップ済み bus_space_handle）
+   - `axpvme_led_mapped`（マップ成功フラグ）
+
+2. **`pci_axpvme_64_pickintr()` にマップ処理を追加**
+   - `bus_space_map(axpvme_iot, 0x2400, 4, 0, &axpvme_led_ioh)` で起動時に一度だけマップ
+   - 初期値として `|`（0x7C）を書き込み、電源投入時の ":::" を置き換え
+
+3. **`axpvme_poll()` にアニメーション更新を追加**
+   - 既存の 1024 Hz callout を流用
+   - `axpvme_poll_ticks & 0xFF == 0`（256 tick ≒ 250 ms）ごとに次のフレームへ
+   - `|` → `/` → `-` → `\` → `|` ... と循環（約 4 Hz）
+
+### 動作確認
+
+ビルド成功（警告なし）。実機テストで LED が `|/-\` と回転することを確認予定。
+
