@@ -19,7 +19,7 @@ DEC AXPvme 230 上で NetBSD/alpha を diskless NFS ブートで動かすため�
 | シリアル | Z85C30 SCC / Channel A (ISA I/O 0x6000) |
 | ファームウェア | SRM Console V17.0-0 / OSF PALcode V1.45-12 |
 | **ホスト機** | Ubuntu Linux (ocha-ubuntu) |
-| ネットワーク IF | enx6084bd485c85 |
+| ネットワーク IF | enp5s0 |
 
 > **注意**: AXPvme 230 は発熱が多いため、電源投入中は必ずエアフローを当てること。
 
@@ -28,7 +28,7 @@ DEC AXPvme 230 上で NetBSD/alpha を diskless NFS ブートで動かすため�
 ```
 [Ubuntu ホスト]                    [AXPvme 230]
 192.168.99.1                       192.168.99.10
-enx6084bd485c85 ─── (直結/HUB) ─── ewa0 (21040 AUI)
+enp5s0 ─── (直結/HUB) ─── ewa0 (21040 AUI)
   │
   ├─ NFS サーバー  /export/client/root/
   └─ dnsmasq       DHCP/BOOTP + TFTP
@@ -195,7 +195,7 @@ sudo cp ~/obj/sys/arch/alpha/compile/AXPVME/netbsd /export/client/root/.
 sudo systemctl start dnsmasq
 
 # 2. ネットワーク監視（別ターミナルで実行）
-sudo tcpdump -i enx6084bd485c85 -n host 192.168.99.10
+sudo tcpdump -i enp5s0 -n host 192.168.99.10
 
 # 3. シリアルコンソール接続（GTKTerm を起動して接続）
 gtkterm &
